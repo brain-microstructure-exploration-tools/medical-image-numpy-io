@@ -1,0 +1,13 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: 2024.08.19
+_src_path: gh:scientific-python/cookie
+backend: hatch
+email: ebrahim.ebrahim@kitware.com
+full_name: Ebrahim Ebrahim
+license: Apache
+org: brain-microstructure-exploration-tools
+project_name: medical-image-numpy-io
+project_short_description: MONAI's image I/O functionality separated out and stripped
+    down to just numpy
+url: https://github.com/brain-microstructure-exploration-tools/medical-image-numpy-io
+vcs: false

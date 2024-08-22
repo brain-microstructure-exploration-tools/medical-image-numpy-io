@@ -31,7 +31,14 @@ classifiers = [
   "Typing :: Typed",
 ]
 dynamic = ["version"]
-dependencies = []
+dependencies = [
+  "numpy",
+  "itk",
+  "nibabel",
+  "pynrrd",
+  "pydicom",
+  "pillow",
+]
 
 [project.optional-dependencies]
 test = [

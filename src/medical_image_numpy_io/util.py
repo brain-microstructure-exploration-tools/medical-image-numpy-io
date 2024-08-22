@@ -1,7 +1,8 @@
 from typing import Union, Iterable, Any, Sequence, Collection, Hashable
 import os
 import re
-from enum import StrEnum
+from enum import StrEnum, EnumMeta, Enum
+from collections.abc import Mapping
 import numpy as np
 from pathlib import PurePath
 
@@ -22,6 +23,84 @@ KeysCollection = Union[Collection[Hashable], Hashable]
 
 # Pattern to pick out certain numpy dtypes; taken from torch.utils.data._utils.collate
 np_str_obj_array_pattern = re.compile(r"[SaUO]")
+
+class OptionalImportError(ImportError):
+    """
+    Could not import APIs from an optional dependency.
+    """
+
+class SpaceKeys(StrEnum):
+    """
+    The coordinate system keys, for example, Nifti1 uses Right-Anterior-Superior or "RAS",
+    DICOM (0020,0032) uses Left-Posterior-Superior or "LPS". This type does not distinguish spatial 1/2/3D.
+    """
+
+    RAS = "RAS"
+    LPS = "LPS"
+
+class MetaKeys(StrEnum):
+    """
+    Typical keys for MetaObj.meta
+    """
+
+    AFFINE = "affine"  # MetaTensor.affine
+    ORIGINAL_AFFINE = "original_affine"  # the affine after image loading before any data processing
+    SPATIAL_SHAPE = "spatial_shape"  # optional key for the length in each spatial dimension
+    SPACE = "space"  # possible values of space type are defined in `SpaceKeys`
+    ORIGINAL_CHANNEL_DIM = "original_channel_dim"  # an integer or float("nan")
+
+class TraceKeys(StrEnum):
+    """Extra metadata keys used for traceable transforms."""
+
+    CLASS_NAME: str = "class"
+    ID: str = "id"
+    ORIG_SIZE: str = "orig_size"
+    EXTRA_INFO: str = "extra_info"
+    DO_TRANSFORM: str = "do_transforms"
+    KEY_SUFFIX: str = "_transforms"
+    NONE: str = "none"
+    TRACING: str = "tracing"
+    STATUSES: str = "statuses"
+    LAZY: str = "lazy"
+
+class GridSampleMode(StrEnum):
+    """
+    See also: https://pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+
+    interpolation mode of `torch.nn.functional.grid_sample`
+
+    Note:
+        (documentation from `torch.nn.functional.grid_sample`)
+        `mode='bicubic'` supports only 4-D input.
+        When `mode='bilinear'` and the input is 5-D, the interpolation mode used internally will actually be trilinear.
+        However, when the input is 4-D, the interpolation mode will legitimately be bilinear.
+    """
+
+    NEAREST = "nearest"
+    BILINEAR = "bilinear"
+    BICUBIC = "bicubic"
+
+class InterpolateMode(StrEnum):
+    """
+    See also: https://pytorch.org/docs/stable/generated/torch.nn.functional.interpolate.html
+    """
+
+    NEAREST = "nearest"
+    NEAREST_EXACT = "nearest-exact"
+    LINEAR = "linear"
+    BILINEAR = "bilinear"
+    BICUBIC = "bicubic"
+    TRILINEAR = "trilinear"
+    AREA = "area"    
+
+class GridSamplePadMode(StrEnum):
+    """
+    See also: https://pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+    """
+
+    ZEROS = "zeros"
+    BORDER = "border"
+    REFLECTION = "reflection"
 
 def is_no_channel(val) -> bool:
     """Returns whether `val` indicates "no_channel", for MetaKeys.ORIGINAL_CHANNEL_DIM."""
@@ -55,6 +134,38 @@ def ensure_tuple(vals: Any, wrap_array: bool = False) -> tuple:
     if wrap_array and isinstance(vals, np.ndarray):
         return (vals,)
     return tuple(vals) if issequenceiterable(vals) else (vals,)
+
+def ensure_tuple_rep(tup: Any, dim: int) -> tuple[Any, ...]:
+    """
+    Returns a copy of `tup` with `dim` values by either shortened or duplicated input.
+
+    Raises:
+        ValueError: When ``tup`` is a sequence and ``tup`` length is not ``dim``.
+
+    Examples::
+
+        >>> ensure_tuple_rep(1, 3)
+        (1, 1, 1)
+        >>> ensure_tuple_rep(None, 3)
+        (None, None, None)
+        >>> ensure_tuple_rep('test', 3)
+        ('test', 'test', 'test')
+        >>> ensure_tuple_rep([1, 2, 3], 3)
+        (1, 2, 3)
+        >>> ensure_tuple_rep(range(3), 3)
+        (0, 1, 2)
+        >>> ensure_tuple_rep([1, 2], 3)
+        ValueError: Sequence must have length 3, got length 2.
+
+    """
+    if isinstance(tup, np.ndarray):
+        tup = tup.tolist()
+    if not issequenceiterable(tup):
+        return (tup,) * dim
+    if len(tup) == dim:
+        return tuple(tup)
+
+    raise ValueError(f"Sequence must have length {dim}, got {len(tup)}.")
 
 def orientation_ras_lps(affine: np.ndarray) -> np.ndarray:
     """
@@ -325,36 +436,157 @@ def correct_nifti_header_if_necessary(img_nii):
         return rectify_header_sform_qform(img_nii)
     return img_nii
 
-class SpaceKeys(StrEnum):
+def damerau_levenshtein_distance(s1: str, s2: str) -> int:
     """
-    The coordinate system keys, for example, Nifti1 uses Right-Anterior-Superior or "RAS",
-    DICOM (0020,0032) uses Left-Posterior-Superior or "LPS". This type does not distinguish spatial 1/2/3D.
+    Calculates the Damerau–Levenshtein distance between two strings for spelling correction.
+    https://en.wikipedia.org/wiki/Damerau–Levenshtein_distance
     """
+    if s1 == s2:
+        return 0
+    string_1_length = len(s1)
+    string_2_length = len(s2)
+    if not s1:
+        return string_2_length
+    if not s2:
+        return string_1_length
+    d = {(i, -1): i + 1 for i in range(-1, string_1_length + 1)}
+    for j in range(-1, string_2_length + 1):
+        d[(-1, j)] = j + 1
 
-    RAS = "RAS"
-    LPS = "LPS"
+    for i, s1i in enumerate(s1):
+        for j, s2j in enumerate(s2):
+            cost = 0 if s1i == s2j else 1
+            d[(i, j)] = min(
+                d[(i - 1, j)] + 1, d[(i, j - 1)] + 1, d[(i - 1, j - 1)] + cost  # deletion  # insertion  # substitution
+            )
+            if i and j and s1i == s2[j - 1] and s1[i - 1] == s2j:
+                d[(i, j)] = min(d[(i, j)], d[i - 2, j - 2] + cost)  # transposition
 
-class MetaKeys(StrEnum):
+    return d[string_1_length - 1, string_2_length - 1]
+
+def look_up_option(
+    opt_str: Hashable,
+    supported: Collection | EnumMeta,
+    default: Any = "no_default",
+    print_all_options: bool = True,
+) -> Any:
     """
-    Typical keys for MetaObj.meta
+    Look up the option in the supported collection and return the matched item.
+    Raise a value error possibly with a guess of the closest match.
+
+    Args:
+        opt_str: The option string or Enum to look up.
+        supported: The collection of supported options, it can be list, tuple, set, dict, or Enum.
+        default: If it is given, this method will return `default` when `opt_str` is not found,
+            instead of raising a `ValueError`. Otherwise, it defaults to `"no_default"`,
+            so that the method may raise a `ValueError`.
+        print_all_options: whether to print all available options when `opt_str` is not found. Defaults to True
+
+    Examples:
+
+    .. code-block:: python
+
+        from enum import Enum
+        from monai.utils import look_up_option
+        class Color(Enum):
+            RED = "red"
+            BLUE = "blue"
+        look_up_option("red", Color)  # <Color.RED: 'red'>
+        look_up_option(Color.RED, Color)  # <Color.RED: 'red'>
+        look_up_option("read", Color)
+        # ValueError: By 'read', did you mean 'red'?
+        # 'read' is not a valid option.
+        # Available options are {'blue', 'red'}.
+        look_up_option("red", {"red", "blue"})  # "red"
+
+    Adapted from https://github.com/NifTK/NiftyNet/blob/v0.6.0/niftynet/utilities/util_common.py#L249
     """
+    if not isinstance(opt_str, Hashable):
+        raise ValueError(f"Unrecognized option type: {type(opt_str)}:{opt_str}.")
+    if isinstance(opt_str, str):
+        opt_str = opt_str.strip()
+    if isinstance(supported, EnumMeta):
+        if isinstance(opt_str, str) and opt_str in {item.value for item in supported}:  # type: ignore
+            # such as: "example" in MyEnum
+            return supported(opt_str)
+        if isinstance(opt_str, Enum) and opt_str in supported:
+            # such as: MyEnum.EXAMPLE in MyEnum
+            return opt_str
+    elif isinstance(supported, Mapping) and opt_str in supported:
+        # such as: MyDict[key]
+        return supported[opt_str]
+    elif isinstance(supported, Collection) and opt_str in supported:
+        return opt_str
 
-    AFFINE = "affine"  # MetaTensor.affine
-    ORIGINAL_AFFINE = "original_affine"  # the affine after image loading before any data processing
-    SPATIAL_SHAPE = "spatial_shape"  # optional key for the length in each spatial dimension
-    SPACE = "space"  # possible values of space type are defined in `SpaceKeys`
-    ORIGINAL_CHANNEL_DIM = "original_channel_dim"  # an integer or float("nan")
+    if default != "no_default":
+        return default
 
-class TraceKeys(StrEnum):
-    """Extra metadata keys used for traceable transforms."""
+    # find a close match
+    set_to_check: set
+    if isinstance(supported, EnumMeta):
+        set_to_check = {item.value for item in supported}  # type: ignore
+    else:
+        set_to_check = set(supported) if supported is not None else set()
+    if not set_to_check:
+        raise ValueError(f"No options available: {supported}.")
+    edit_dists = {}
+    opt_str = f"{opt_str}"
+    for key in set_to_check:
+        edit_dist = damerau_levenshtein_distance(f"{key}", opt_str)
+        if edit_dist <= 3:
+            edit_dists[key] = edit_dist
 
-    CLASS_NAME: str = "class"
-    ID: str = "id"
-    ORIG_SIZE: str = "orig_size"
-    EXTRA_INFO: str = "extra_info"
-    DO_TRANSFORM: str = "do_transforms"
-    KEY_SUFFIX: str = "_transforms"
-    NONE: str = "none"
-    TRACING: str = "tracing"
-    STATUSES: str = "statuses"
-    LAZY: str = "lazy"
+    supported_msg = f"Available options are {set_to_check}.\n" if print_all_options else ""
+    if edit_dists:
+        guess_at_spelling = min(edit_dists, key=edit_dists.get)  # type: ignore
+        raise ValueError(
+            f"By '{opt_str}', did you mean '{guess_at_spelling}'?\n"
+            + f"'{opt_str}' is not a valid value.\n"
+            + supported_msg
+        )
+    raise ValueError(f"Unsupported option '{opt_str}', " + supported_msg)
+
+def to_affine_nd(r: np.ndarray | int, affine: np.ndarray, dtype=np.float64) -> np.ndarray:
+    """
+    Using elements from affine, to create a new affine matrix by
+    assigning the rotation/zoom/scaling matrix and the translation vector.
+
+    When ``r`` is an integer, output is an (r+1)x(r+1) matrix,
+    where the top left kxk elements are copied from ``affine``,
+    the last column of the output affine is copied from ``affine``'s last column.
+    `k` is determined by `min(r, len(affine) - 1)`.
+
+    When ``r`` is an affine matrix, the output has the same shape as ``r``,
+    and the top left kxk elements are copied from ``affine``,
+    the last column of the output affine is copied from ``affine``'s last column.
+    `k` is determined by `min(len(r) - 1, len(affine) - 1)`.
+
+    Args:
+        r (int or matrix): number of spatial dimensions or an output affine to be filled.
+        affine (matrix): 2D affine matrix
+        dtype: data type of the output array.
+
+    Raises:
+        ValueError: When ``affine`` dimensions is not 2.
+        ValueError: When ``r`` is nonpositive.
+
+    Returns:
+        an (r+1) x (r+1) matrix (tensor or ndarray depends on the input ``affine`` data type)
+
+    """
+    affine_np = convert_data_type(affine, output_type=np.ndarray, dtype=dtype, wrap_sequence=True)[0]
+    affine_np = affine_np.copy()
+    if affine_np.ndim != 2:
+        raise ValueError(f"affine must have 2 dimensions, got {affine_np.ndim}.")
+    new_affine = np.array(r, dtype=dtype, copy=True)
+    if new_affine.ndim == 0:
+        sr: int = int(new_affine.astype(np.uint))
+        if not np.isfinite(sr) or sr < 0:
+            raise ValueError(f"r must be positive, got {sr}.")
+        new_affine = np.eye(sr + 1, dtype=dtype)
+    d = max(min(len(new_affine) - 1, len(affine_np) - 1), 1)
+    new_affine[:d, :d] = affine_np[:d, :d]
+    if d > 1:
+        new_affine[:d, -1] = affine_np[:d, -1]
+    output, *_ = convert_to_dst_type(new_affine, affine, dtype=dtype)
+    return output

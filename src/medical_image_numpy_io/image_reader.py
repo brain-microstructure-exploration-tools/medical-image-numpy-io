@@ -19,37 +19,31 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
-from torch.utils.data._utils.collate import np_str_obj_array_pattern
 
-from monai.config import KeysCollection, PathLike
-from monai.data.utils import (
-    affine_to_spacing,
-    correct_nifti_header_if_necessary,
+import itk
+import nibabel as nib
+import nrrd
+import pydicom
+from nibabel.nifti1 import Nifti1Image
+from PIL import Image as PILImage
+
+from medical_image_numpy_io.util import (
+    PathLike,
+    KeysCollection,
+    np_str_obj_array_pattern,
     is_no_channel,
-    is_supported_format,
+    ensure_tuple,
     orientation_ras_lps,
+    affine_to_spacing,
+    is_supported_format,
+    correct_nifti_header_if_necessary,
+    MetaKeys,
+    TraceKeys,
+    SpaceKeys,
 )
-from monai.utils import MetaKeys, SpaceKeys, TraceKeys, ensure_tuple, optional_import, require_pkg
-
-if TYPE_CHECKING:
-    import itk
-    import nibabel as nib
-    import nrrd
-    import pydicom
-    from nibabel.nifti1 import Nifti1Image
-    from PIL import Image as PILImage
-
-    has_nrrd = has_itk = has_nib = has_pil = has_pydicom = True
-else:
-    itk, has_itk = optional_import("itk", allow_namespace_pkg=True)
-    nib, has_nib = optional_import("nibabel")
-    Nifti1Image, _ = optional_import("nibabel.nifti1", name="Nifti1Image")
-    PILImage, has_pil = optional_import("PIL.Image")
-    pydicom, has_pydicom = optional_import("pydicom")
-    nrrd, has_nrrd = optional_import("nrrd", allow_namespace_pkg=True)
 
 __all__ = ["ImageReader", "ITKReader", "NibabelReader", "NumpyReader", "PILReader", "PydicomReader", "NrrdReader"]
 
@@ -148,7 +142,6 @@ def _stack_images(image_list: list, meta_dict: dict):
     return np.stack(image_list, axis=0)
 
 
-@require_pkg(pkg_name="itk")
 class ITKReader(ImageReader):
     """
     Load medical images based on ITK library.
@@ -206,7 +199,7 @@ class ITKReader(ImageReader):
                 if a list of files, verify all the suffixes.
 
         """
-        return has_itk
+        return True # Was originally has_itk, but I removed the optional dependencies feature.
 
     def read(self, data: Sequence[PathLike] | PathLike, **kwargs):
         """
@@ -372,7 +365,6 @@ class ITKReader(ImageReader):
         return np_img if self.reverse_indexing else np.moveaxis(np_img.T, 0, -1)
 
 
-@require_pkg(pkg_name="pydicom")
 class PydicomReader(ImageReader):
     """
     Load medical images based on Pydicom library.
@@ -444,7 +436,7 @@ class PydicomReader(ImageReader):
                 if a list of files, verify all the suffixes.
 
         """
-        return has_pydicom
+        return True # Was originally "has_pydicom" in MONAI, but I removed the optional dependencies feature.
 
     def read(self, data: Sequence[PathLike] | PathLike, **kwargs):
         """
@@ -858,7 +850,6 @@ class PydicomReader(ImageReader):
         return data
 
 
-@require_pkg(pkg_name="nibabel")
 class NibabelReader(ImageReader):
     """
     Load NIfTI format images based on Nibabel library.
@@ -898,7 +889,7 @@ class NibabelReader(ImageReader):
 
         """
         suffixes: Sequence[str] = ["nii", "nii.gz"]
-        return has_nib and is_supported_format(filename, suffixes)
+        return is_supported_format(filename, suffixes)
 
     def read(self, data: Sequence[PathLike] | PathLike, **kwargs):
         """
@@ -1125,7 +1116,6 @@ class NumpyReader(ImageReader):
         return _stack_images(img_array, compatible_meta), compatible_meta
 
 
-@require_pkg(pkg_name="PIL")
 class PILReader(ImageReader):
     """
     Load common 2D image format (supports PNG, JPG, BMP) file or files from provided path.
@@ -1155,7 +1145,7 @@ class PILReader(ImageReader):
                 if a list of files, verify all the suffixes.
         """
         suffixes: Sequence[str] = ["png", "jpg", "jpeg", "bmp"]
-        return has_pil and is_supported_format(filename, suffixes)
+        return is_supported_format(filename, suffixes)
 
     def read(self, data: Sequence[PathLike] | PathLike | np.ndarray, **kwargs):
         """
@@ -1238,7 +1228,6 @@ class NrrdImage:
     header: dict
 
 
-@require_pkg(pkg_name="nrrd")
 class NrrdReader(ImageReader):
     """
     Load NRRD format images based on pynrrd library.
@@ -1283,7 +1272,7 @@ class NrrdReader(ImageReader):
 
         """
         suffixes: Sequence[str] = ["nrrd", "seg.nrrd"]
-        return has_nrrd and is_supported_format(filename, suffixes)
+        return is_supported_format(filename, suffixes)
 
     def read(self, data: Sequence[PathLike] | PathLike, **kwargs) -> Sequence[Any] | Any:
         """
